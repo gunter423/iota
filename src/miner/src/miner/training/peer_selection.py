@@ -10,10 +10,24 @@ from __future__ import annotations
 import math
 
 import random
+import time
 
 from loguru import logger
 
 from common.models.compute_node import ComputeNode
+from miner import settings as miner_settings
+
+# Tolerated forward skew for last_status_received. It is stamped with our own clock
+# on receipt, so a value meaningfully in the future did not come from our receiver
+# (e.g. a peer self-advertising it via its registry entry) and is not trusted.
+_STATUS_FUTURE_TOLERANCE_S = 5.0
+
+
+def _status_is_fresh(last_status_received: float, now: float, max_age_s: float) -> bool:
+    if not last_status_received:
+        return False
+    age = now - last_status_received
+    return -_STATUS_FUTURE_TOLERANCE_S <= age <= max_age_s
 
 
 def _is_accepting_work(node: ComputeNode) -> bool:
@@ -35,7 +49,12 @@ def select_random(eligible: list[ComputeNode]) -> ComputeNode | None:
     return random.choice(candidates)
 
 
-def select_by_capacity(eligible: list[ComputeNode]) -> ComputeNode | None:
+def select_by_capacity(
+    eligible: list[ComputeNode],
+    *,
+    max_status_age_s: float | None = None,
+    now: float | None = None,
+) -> ComputeNode | None:
     """Weighted random selection favouring peers with more available capacity.
 
     Peers are scored by remaining cache headroom plus an inverse of forward
@@ -45,10 +64,18 @@ def select_by_capacity(eligible: list[ComputeNode]) -> ComputeNode | None:
     (backpressure — don't send into full caches).  Falls back to uniform
     random over accepting peers only when no peer has reported metrics yet
     (first-contact window before broadcasts arrive).
+
+    A status older than ``max_status_age_s`` (default
+    ``PEER_STATUS_MAX_AGE_SECONDS``) counts as no status: received status used to
+    never expire, so senders kept routing to peers that had died or been kicked.
     """
+    if max_status_age_s is None:
+        max_status_age_s = miner_settings.PEER_STATUS_MAX_AGE_SECONDS
+    if now is None:
+        now = time.time()
     scored: list[tuple[ComputeNode, float]] = []
     # Tally why peers are excluded so the routing decision's inputs are visible.
-    skips = {"no_status": 0, "phase": 0, "status": 0, "no_capacity": 0}
+    skips = {"no_status": 0, "stale": 0, "phase": 0, "status": 0, "no_capacity": 0}
     considered: list[str] = []  # per-peer cache/queue inputs + outcome for routing visibility
     for node in eligible:
         m = node.runtime_metrics
@@ -60,6 +87,11 @@ def select_by_capacity(eligible: list[ComputeNode]) -> ComputeNode | None:
             # No metrics received — skip
             skips["no_status"] += 1
             considered.append(tag + " -> skip:no_status")
+            continue
+        if not _status_is_fresh(m.last_status_received, now, max_status_age_s):
+            # Not heard from recently (or an untrusted future timestamp) — skip
+            skips["stale"] += 1
+            considered.append(tag + f" -> skip:stale(age={now - m.last_status_received:.0f}s)")
             continue
         if m.layer_phase != "training":
             skips["phase"] += 1
@@ -92,13 +124,14 @@ def select_by_capacity(eligible: list[ComputeNode]) -> ComputeNode | None:
         )
         return chosen
 
-    if any(n.runtime_metrics.last_status_received for n in eligible):
+    if any(_status_is_fresh(n.runtime_metrics.last_status_received, now, max_status_age_s) for n in eligible):
         # Peers are reporting but none has capacity — apply backpressure.
         logger.debug(f"route=backpressure eligible={len(eligible)} skips={skips} -> None (defer) | peers: {peers}")
         return None
 
-    # Nothing measured — fall back to uniform random over peers we believe
-    # are accepting work (covers the first-contact window before broadcasts arrive).
+    # Nothing measured recently — fall back to uniform random over peers we believe
+    # are accepting work (covers the first-contact window before broadcasts arrive,
+    # and a local receiver outage where every status has gone stale).
     chosen = select_random(eligible)
     logger.debug(
         f"route=random-fallback eligible={len(eligible)} skips={skips} "
