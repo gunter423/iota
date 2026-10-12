@@ -70,6 +70,10 @@ ACTIVATION_PUSH_TIMEOUT_SECONDS = float(os.getenv("ACTIVATION_PUSH_TIMEOUT_SECON
 ACTIVATION_SEND_CONCURRENCY = int(os.getenv("ACTIVATION_SEND_CONCURRENCY", "8"))
 
 PEER_STATUS_BROADCAST_INTERVAL_SECONDS = float(os.getenv("PEER_STATUS_BROADCAST_INTERVAL_SECONDS", "5.0"))
+# A peer whose last /peer/status arrived longer ago than this is not routed to by
+# capacity selection (it has likely died, been kicked, or lost connectivity).
+# Keep it several broadcast intervals wide so one or two dropped broadcasts don't evict a peer.
+PEER_STATUS_MAX_AGE_SECONDS = float(os.getenv("PEER_STATUS_MAX_AGE_SECONDS", "30.0"))
 
 # How often the miner re-pulls the run's flags + hyperparameters from the
 # orchestrator so operator changes (e.g. cache size) apply without a restart.

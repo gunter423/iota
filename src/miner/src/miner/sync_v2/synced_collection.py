@@ -198,11 +198,30 @@ async def wildcard_fetch(
     resp.raise_for_status()
     all_entries = resp.json()
 
-    matching_ids = [e["var_id"] for e in all_entries if fnmatch.fnmatch(e["var_id"], full_pattern)]
-    if not matching_ids:
+    matching = [e for e in all_entries if fnmatch.fnmatch(e["var_id"], full_pattern)]
+    if not matching:
         return {}
 
-    resp = await _bridge_request(client, "POST", "/get", json={"var_ids": matching_ids})
+    # GET /vars already returns value, version and updated_at for every match, so a
+    # follow-up POST /get listing every matched var_id is redundant. That body grows
+    # with the registry (it hit ingress-nginx's 1 MiB limit -> 413) and makes the
+    # bridge re-read every key 3x. Fall back to /get only for a bridge whose /vars
+    # entries lack values.
+    if all("value" in e and "version" in e for e in matching):
+        data = {
+            "variables": [
+                {
+                    "var_id": e["var_id"],
+                    "value": e["value"],
+                    "version": e["version"],
+                    "metadata": {"updated_at": e.get("updated_at", "")},
+                }
+                for e in matching
+            ]
+        }
+        return apply_get_response(data, run_id=run_id, variables=variables)
+
+    resp = await _bridge_request(client, "POST", "/get", json={"var_ids": [e["var_id"] for e in matching]})
     resp.raise_for_status()
 
     return apply_get_response(resp.json(), run_id=run_id, variables=variables)

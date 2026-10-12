@@ -475,6 +475,32 @@ async def test_wildcard_fetch_updates_tracked_cache():
     assert get_cached("a/b", variables) == {"k": 9}
 
 
+async def test_wildcard_fetch_uses_vars_values_without_post_get():
+    """/vars already carries value+version, so no POST /get listing every var_id
+    (that body grew with the registry until ingress returned 413)."""
+    client = _make_client()
+    client.get = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"var_id": "run-abc/pfx/n1", "value": {"x": 1}, "version": 4, "updated_at": "t1"},
+                {"var_id": "run-abc/pfx/n2/deep", "value": 2, "version": 1, "updated_at": "t2"},
+                {"var_id": "run-abc/other/n3", "value": 3, "version": 1, "updated_at": "t3"},
+            ],
+            request=httpx.Request("GET", "http://test/vars"),
+        )
+    )
+    variables: dict[str, SyncedVariableV2] = {
+        "pfx/n1": SyncedVariableV2(run_id="run-abc", name="pfx/n1", var_type="dict", default={})
+    }
+    out = await wildcard_fetch(client, "run-abc", "pfx/*", variables=variables)
+    assert out == {"pfx/n1": {"x": 1}, "pfx/n2/deep": 2}
+    assert variables["pfx/n1"].version == 4
+    assert variables["pfx/n1"].updated_at == "t1"
+    assert variables["pfx/n1"].get_cached_value() == {"x": 1}
+    client.post.assert_not_awaited()
+
+
 async def test_wildcard_fetch_no_match_short_circuits():
     client = _make_client()
     client.get = AsyncMock(return_value=httpx.Response(200, json=[], request=httpx.Request("GET", "http://test/vars")))
