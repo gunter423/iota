@@ -68,9 +68,15 @@ class ElasticDeviceMesh:
         """Map node_id → entry, merging synced dict with local overrides."""
         result: dict[str, Any] = {}
         if self._dict is not None:
-            for val in self._dict.values():
-                if isinstance(val, dict) and (nid := val.get("node_id")) is not None:
-                    result[str(nid)] = val
+            for slug, val in self._dict.items():
+                if not isinstance(val, dict) or (nid := val.get("node_id")) is None:
+                    continue
+                # An entry is only trusted for the node id its key belongs to: the
+                # bridge authorizes writes per ``node_registry/<slug(hotkey)>/``, so
+                # an entry claiming another node's id is an impersonation attempt.
+                if slug != _bridge_key_segment(nid):
+                    continue
+                result[str(nid)] = val
         result.update(self._local_overrides)
         return result
 

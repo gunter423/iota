@@ -295,7 +295,7 @@ class ModelManager:
         total_model_params: int = sum(p.numel() for p in self.model.parameters())
         logger.debug(f"Total model params: {total_model_params}")
 
-        split_grad_norm = self.model_metadata["grad_clip_norm"] * math.sqrt(
+        split_grad_norm = common_settings.GRAD_CLIP_NORM * math.sqrt(
             total_model_params / self.model_config["total_global_params"]
         )
 
@@ -310,7 +310,7 @@ class ModelManager:
 
         total_model_params: int = sum(p.numel() for p in self.model.parameters())
 
-        max_grad_norm = self.model_metadata["grad_clip_norm"] * math.sqrt(
+        max_grad_norm = common_settings.GRAD_CLIP_NORM * math.sqrt(
             total_model_params / self.model_config["total_global_params"]
         )
 
@@ -486,6 +486,9 @@ class ModelManager:
                 learning_rate = common_settings.LEARNING_RATE
             logger.debug(f"Setting learning rate to {learning_rate}")
             self.optimizer.param_groups[0]["lr"] = learning_rate
+            # Re-set every step: the run may change it live, and loading a shared optimizer
+            # state restores the uploader's param_groups.
+            self.optimizer.param_groups[0]["weight_decay"] = common_settings.WEIGHT_DECAY
             logger.debug(f"Stepping optimizer for miner {self.logger_attributes['hotkey'][:8]}")
 
             # Step and zero the gradients

@@ -37,6 +37,7 @@ from miner.p2p import SenderUnavailableError
 from subnet.utils.partition_utils import save_model_weights_and_optimizer_state
 from subnet.utils.vector_utils import reconstruct_optimizer_state, get_optimizer_tensor_shapes
 from miner.utils.timer_logger import TimerLoggerMiner
+from miner.utils.training_settings import set_training_setting
 from miner.telemetry import TelemetryBufferService
 from miner.telemetry.resource_metrics import disk_paths_from_env
 from miner.utils.stats import StatsTracker
@@ -381,6 +382,10 @@ class Miner(BaseNeuron, HealthServerMixin, NodeControlMixin):
             common_settings.MINI_BATCH_ACCUMULATION_COUNT,
             common_settings.MAX_ACTIVATION_CACHE_SIZE,
             common_settings.SEQUENCE_LENGTH,
+            common_settings.LEARNING_RATE,
+            common_settings.NESTEROV_LEARNING_RATE,
+            common_settings.WEIGHT_DECAY,
+            common_settings.GRAD_CLIP_NORM,
         )
         common_settings.set_mini_batch_size((model_metadata.get("dataset") or {}).get("mini_batch_size"))
         common_settings.set_mini_batch_accumulation_count(model_metadata.get("mini_batch_accumulation_count"))
@@ -388,17 +393,29 @@ class Miner(BaseNeuron, HealthServerMixin, NodeControlMixin):
             (model_metadata.get("activation") or {}).get("max_activation_cache_size")
         )
         common_settings.set_sequence_length((model_metadata.get("dataset") or {}).get("sequence_length"))
+        # Training settings: clamped to miner.utils.training_settings bounds; absent = default.
+        opt = model_metadata.get("opt") or {}
+        set_training_setting("LEARNING_RATE", opt.get("learning_rate"))
+        set_training_setting("NESTEROV_LEARNING_RATE", opt.get("outer_learning_rate"))
+        set_training_setting("WEIGHT_DECAY", opt.get("weight_decay"))
+        set_training_setting("GRAD_CLIP_NORM", model_metadata.get("grad_clip_norm"))
         after = (
             common_settings.MINI_BATCH_SIZE,
             common_settings.MINI_BATCH_ACCUMULATION_COUNT,
             common_settings.MAX_ACTIVATION_CACHE_SIZE,
             common_settings.SEQUENCE_LENGTH,
+            common_settings.LEARNING_RATE,
+            common_settings.NESTEROV_LEARNING_RATE,
+            common_settings.WEIGHT_DECAY,
+            common_settings.GRAD_CLIP_NORM,
         )
         if after != before:
             logger.info(
                 f"Run hyperparameters updated for miner {self.hotkey[:8]}: "
                 f"mini_batch_size={after[0]}, mini_batch_accumulation_count={after[1]}, "
-                f"max_activation_cache_size={after[2]}, sequence_length={after[3]}"
+                f"max_activation_cache_size={after[2]}, sequence_length={after[3]}, "
+                f"learning_rate={after[4]}, outer_learning_rate={after[5]}, "
+                f"weight_decay={after[6]}, grad_clip_norm={after[7]}"
             )
 
     async def _run_config_refresh_loop(self) -> None:
@@ -1725,9 +1742,9 @@ class Miner(BaseNeuron, HealthServerMixin, NodeControlMixin):
                 except Exception as e:
                     logger.warning(f"Error notifying orchestrator of state call: {e}")
 
-                attestation_payload: MinerAttestationPayload | None = await self._collect_attestation_payload(
-                    action="weights"
-                )
+                attestation_payload: (
+                    MinerAttestationPayload | MountedAttestationPayload | EnclaveSignResponse | None
+                ) = await self._collect_attestation_payload(action="weights")
                 self._log_resources("after_collect_attestation")
 
                 check_for_nans_and_infs(
