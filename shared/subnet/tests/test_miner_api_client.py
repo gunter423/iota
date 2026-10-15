@@ -3,11 +3,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from common.models.api_models import (
+    MinerAttestationPayload,
     MinerRegistrationQueueStatusResponse,
     MinerRegistrationResponse,
+    MountedAttestationPayload,
     RegisterMinerRequest,
+    WeightUpdate,
 )
 from common.models.run_flags import RunFlags
+from common.utils.partitions import MinerPartition
 from subnet import miner_api_client as miner_api_client_module
 from subnet.common_api_client import CommonAPIClient
 from subnet.miner_api_client import MinerAPIClient, registration_queue_poll_sleep_seconds
@@ -84,3 +88,62 @@ async def test_register_request_does_not_replay_single_use_attestation(monkeypat
     assert response.run_id == "run-1"
     assert request.await_args.kwargs["path"] == "/miner/register"
     assert request.await_args.kwargs["max_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_weights_sends_attestation_in_body(monkeypatch):
+    request = AsyncMock(return_value={"message": "ok", "should_upload_optimizer_state": False})
+    monkeypatch.setattr(CommonAPIClient, "orchestrator_request", request)
+    attestation = MinerAttestationPayload(payload_blob="blob")
+
+    response = await MinerAPIClient().submit_weights(
+        weight_update=WeightUpdate(weights_path="s3://weights/blob", attestation=attestation)
+    )
+
+    assert response.should_upload_optimizer_state is False
+    assert request.await_args.kwargs["path"] == "/miner/submit_weights"
+    body = request.await_args.kwargs["body"]
+    assert body["weights_path"] == "s3://weights/blob"
+    assert body["attestation"] == {"payload_blob": "blob", "encrypted_attestation": None}
+
+
+@pytest.mark.asyncio
+async def test_submit_merged_partitions_sends_attestation_in_body(monkeypatch):
+    request = AsyncMock(return_value={"message": "ok"})
+    monkeypatch.setattr(CommonAPIClient, "orchestrator_request", request)
+    attestation = MountedAttestationPayload(
+        schema_version=1,
+        key_id="key-1",
+        public_key_base64="pub",
+        payload_base64="payload",
+        signature_der_base64="sig",
+        payload_sha256_base64="sha",
+        alg="ES256",
+        challenge_id="challenge-1",
+    )
+
+    await MinerAPIClient().submit_merged_partitions(
+        merged_partitions=[MinerPartition(layer=0, chunk_number=3, miner_hotkey="hk", blob_path="s3://p/3")],
+        attestation=attestation,
+    )
+
+    assert request.await_args.kwargs["path"] == "/miner/submit_merged_partitions"
+    body = request.await_args.kwargs["body"]
+    assert [p["chunk_number"] for p in body["partitions"]] == [3]
+    assert body["attestation"]["challenge_id"] == "challenge-1"
+    assert body["attestation"]["signature_der_base64"] == "sig"
+
+
+@pytest.mark.asyncio
+async def test_upload_submits_without_attestation_keep_optional_field(monkeypatch):
+    # Runs with attest off (or an attestation the client could not collect) still
+    # submit; the field is sent as null, which the server accepts.
+    request = AsyncMock(return_value={"message": "ok"})
+    monkeypatch.setattr(CommonAPIClient, "orchestrator_request", request)
+    client = MinerAPIClient()
+
+    await client.submit_weights(weight_update=WeightUpdate(weights_path="s3://weights/blob"))
+    assert request.await_args.kwargs["body"]["attestation"] is None
+
+    await client.submit_merged_partitions(merged_partitions=[MinerPartition(layer=0, chunk_number=0)])
+    assert request.await_args.kwargs["body"]["attestation"] is None

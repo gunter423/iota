@@ -435,7 +435,7 @@ class MinerAPIClient(CommonAPIClient):
     async def submit_merged_partitions(
         self,
         merged_partitions: list[MinerPartition],
-        attestation: MinerAttestationPayload | None = None,
+        attestation: MinerAttestationPayload | MountedAttestationPayload | EnclaveSignResponse | None = None,
     ) -> dict:
         """Submit merged partitions to the orchestrator."""
         try:
