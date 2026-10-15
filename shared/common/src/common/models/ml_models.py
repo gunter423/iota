@@ -38,6 +38,8 @@ class OptimizerMetadata(BaseModel):
     weight_decay: float | None = None
     betas: list[float] | None = None
     eps: float | None = None
+    # Outer (DiLoCo/Nesterov merge) learning rate; None = common.settings.NESTEROV_LEARNING_RATE.
+    outer_learning_rate: float | None = None
 
 
 class DatasetMetadata(BaseModel):

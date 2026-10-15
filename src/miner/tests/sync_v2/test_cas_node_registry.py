@@ -170,6 +170,7 @@ def _registry_with_dict_values(own_node_id: str, slug_entries: dict) -> ElasticD
     reg = ElasticDeviceMesh(run_id="test-run", own_node_id=own_node_id)
     mock_dict = MagicMock()
     mock_dict.values.return_value = slug_entries.values()
+    mock_dict.items.return_value = slug_entries.items()
     reg._dict = mock_dict
     return reg
 
@@ -192,11 +193,25 @@ def test_entries_uses_node_id_from_payload():
         own_node_id="5FH6jq",
         slug_entries={
             "5FH6jq": {"node_id": "5FH6jq", "groups": ["all"]},
-            "other": {"node_id": "other_key", "groups": ["all"]},
+            "other_key": {"node_id": "other_key", "groups": ["all"]},
         },
     )
     assert set(reg.keys()) == {"5FH6jq", "other_key"}
     assert reg["other_key"]["node_id"] == "other_key"
+
+
+def test_entries_ignores_payload_claiming_another_slugs_node_id():
+    """Writes are authorized per node_registry/<slug(hotkey)>/, so an entry whose
+    node_id names a different node is impersonation and must not shadow it."""
+    reg = _registry_with_dict_values(
+        own_node_id="me",
+        slug_entries={
+            "victim": {"node_id": "victim", "iroh_relay_url": "real"},
+            "mallory": {"node_id": "victim", "iroh_relay_url": "evil"},
+        },
+    )
+    assert set(reg.keys()) == {"victim"}
+    assert reg["victim"]["iroh_relay_url"] == "real"
 
 
 def test_entries_skips_payloads_without_node_id():
